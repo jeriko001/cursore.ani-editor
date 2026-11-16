@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cursore Esecuzione in background</title>
+<style>
+:root{--bg:#f4f4f6;--card:#fff;--tx:#1b1b1f;--mu:#666;--ac:#2f6df6;--bd:#d8d8de}
+@media (prefers-color-scheme:dark){:root{--bg:#16161a;--card:#202026;--tx:#eee;--mu:#9a9aa5;--bd:#37373f}}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);padding:20px}
+.w{max-width:720px;margin:auto}
+h1{font-size:1.3rem;margin:0 0 4px}
+p.s{color:var(--mu);margin:0 0 16px;font-size:.9rem}
+.c{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:14px}
+label{display:block;font-size:.85rem;color:var(--mu);margin:8px 0 4px}
+input[type=file]{width:100%}
+.r{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+input[type=number]{width:100%;padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx)}
+button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:1rem;cursor:pointer}
+button:disabled{opacity:.4;cursor:default}
+canvas{image-rendering:pixelated;background:repeating-conic-gradient(#ccc 0 25%,#eee 0 50%) 0 0/16px 16px;border:1px solid var(--bd);border-radius:8px}
+#log{font-size:.85rem;color:var(--mu);margin-top:8px;white-space:pre-wrap}
+.pv{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="w">
+<h1>Cursore "Esecuzione in background"</h1>
+<p class="s">Sovrappone la freccia (.cur) a ogni fotogramma del tuo .ani "Occupato" e crea un nuovo .ani. Tutto resta nel tuo browser.</p>
+
+<div class="c">
+<label>1) Il tuo .ani di "Occupato"</label>
+<input type="file" id="fAni" accept=".ani">
+<label>2) La tua freccia (.cur, .ico o .png)</label>
+<input type="file" id="fCur" accept=".cur,.ico,.png">
+<div id="log"></div>
+</div>
+
+<div class="c">
+<div class="r">
+<div><label>Dimensione cursore (px)</label><input type="number" id="S" value="32" min="16" max="256"></div>
+<div><label>Freccia: dimensione (px)</label><input type="number" id="A" value="32" min="4" max="256"></div>
+<div><label>Spinner: dimensione (px)</label><input type="number" id="P" value="22" min="4" max="256"></div>
+<div><label>Spinner: posizione X</label><input type="number" id="X" value="10"></div>
+<div><label>Spinner: posizione Y</label><input type="number" id="Y" value="10"></div>
+<div><label>Hotspot X (vuoto = dalla freccia)</label><input type="number" id="HX" placeholder="auto"></div>
+<div><label>Hotspot Y (vuoto = dalla freccia)</label><input type="number" id="HY" placeholder="auto"></div>
+<div><label>Chi sta sopra</label><select id="ORD" style="width:100%;padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx)"><option value="ani">Spinner (.ani) sopra</option><option value="cur">Freccia (.cur) sopra</option></select></div>
+</div>
+<div style="margin-top:10px"><button id="orig" type="button">Usa dimensioni originali (nessuna perdita di qualità)</button></div>
+<p class="s" style="margin-top:10px">La freccia sta in alto a sinistra, lo spinner in basso a destra. Se la tua freccia è già su una tela 32x32, lascia la dimensione freccia uguale al cursore.</p>
+</div>
+
+<div class="c pv">
+<canvas id="pv" width="32" height="32" style="width:256px;height:256px"></canvas>
+<div>
+<button id="dl" disabled>Scarica background.ani</button>
+<div style="margin-top:8px;font-size:.85rem;color:var(--mu)">Poi: Impostazioni mouse → Puntatori → "Esecuzione in background" → Sfoglia.</div>
+</div>
+</div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const log=t=>$('log').textContent=t;
+let ani=null, arrow=null, frames=[], timer=null, composed=[];
+
+const rd=f=>new Promise(r=>{const x=new FileReader();x.onload=()=>r(new Uint8Array(x.result));x.readAsArrayBuffer(f)});
+const tag=(d,o)=>String.fromCharCode(d[o],d[o+1],d[o+2],d[o+3]);
+
+function parseAni(d){
+  const dv=new DataView(d.buffer);
+  if(tag(d,0)!=='RIFF'||tag(d,8)!=='ACON') throw new Error('Non è un file .ani valido');
+  const o={icons:[],rate:null,seq:null,anih:null};
+  function walk(s,e){
+    while(s+8<=e){
+      const id=tag(d,s), sz=dv.getUint32(s+4,true), b=s+8;
+      if(id==='LIST'){ walk(b+4,b+sz); }
+      else if(id==='anih'){ o.anih={cFrames:dv.getUint32(b+4,true),cSteps:dv.getUint32(b+8,true),cx:dv.getUint32(b+12,true),cy:dv.getUint32(b+16,true),jif:dv.getUint32(b+28,true)}; }
+      else if(id==='rate'){ o.rate=[];for(let i=0;i<sz;i+=4)o.rate.push(dv.getUint32(b+i,true)); }
+      else if(id==='seq '){ o.seq=[];for(let i=0;i<sz;i+=4)o.seq.push(dv.getUint32(b+i,true)); }
+      else if(id==='icon'){ o.icons.push(d.slice(b,b+sz)); }
+      s=b+sz+(sz&1);
+    }
+  }
+  walk(12,Math.min(d.length,8+dv.getUint32(4,true)));
+  if(!o.anih||!o.icons.length) throw new Error('Nessun fotogramma trovato');
+  return o;
+}
+
+// Estrae la voce più grande di un .cur/.ico e la rende un .ico a voce singola decodificabile dal browser
+function decodeIcon(data){
+  const dv=new DataView(data.buffer,data.byteOffset,data.byteLength);
+  const type=dv.getUint16(2,true), n=dv.getUint16(4,true);
+  let best=0,bw=-1;
+  for(let i=0;i<n;i++){let w=data[6+i*16]||256;if(w>bw){bw=w;best=i;}}
+  const e=6+best*16;
+  const size=dv.getUint32(e+8,true), off=dv.getUint32(e+12,true);
+  const hx=type===2?dv.getUint16(e+4,true):0, hy=type===2?dv.getUint16(e+6,true):0;
+  const out=new Uint8Array(22+size), ov=new DataView(out.buffer);
+  ov.setUint16(2,1,true);ov.setUint16(4,1,true);
+  out.set(data.slice(e,e+4),6);
+  ov.setUint16(10,1,true);ov.setUint16(12,32,true);
+  ov.setUint32(14,size,true);ov.setUint32(18,22,true);
+  out.set(data.slice(off,off+size),22);
+  return loadImg(new Blob([out],{type:'image/x-icon'})).then(img=>({img,hx,hy,w:bw}));
+}
+function loadImg(blob){
+  return new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=()=>rej(new Error('Immagine non decodificabile'));i.src=URL.createObjectURL(blob);});
+}
+
+$('fAni').onchange=async e=>{
+  try{
+    ani=parseAni(await rd(e.target.files[0]));
+    frames=[];
+    for(const ic of ani.icons) frames.push((await decodeIcon(ic)).img);
+    const sz=ani.anih.cx||frames[0].naturalWidth;
+    if(sz) $('S').value=sz;
+    log('.ani letto: '+frames.length+' fotogrammi.'+(arrow?'':' Ora carica la freccia.'));
+    update();
+  }catch(err){log('Errore .ani: '+err.message);}
+};
+$('fCur').onchange=async e=>{
+  try{
+    const f=e.target.files[0], d=await rd(f);
+    if(d[0]===0&&d[1]===0&&(d[2]===1||d[2]===2)) arrow=await decodeIcon(d);
+    else arrow={img:await loadImg(f),hx:0,hy:0,w:0};
+    log('Freccia letta (hotspot '+arrow.hx+','+arrow.hy+').'+(ani?'':' Ora carica il .ani.'));
+    update();
+  }catch(err){log('Errore freccia: '+err.message);}
+};
+['S','A','P','X','Y','HX','HY','ORD'].forEach(k=>$(k).oninput=update);
+$('orig').onclick=()=>{
+  if(!ani||!arrow){log('Carica prima .ani e freccia.');return;}
+  const aw=arrow.img.naturalWidth||32, pw=frames[0].naturalWidth||32;
+  $('A').value=aw;$('P').value=pw;
+  $('S').value=Math.max(+$('S').value,aw,pw);
+  update();
+  log('Dimensioni originali: freccia '+aw+'px, spinner '+pw+'px, cursore '+$('S').value+'px. Se lo spinner copre la freccia, aumenta "Dimensione cursore" (es. 48 o 64) e sposta X/Y.');
+};
+
+function compose(){
+  const S=+$('S').value,A=+$('A').value,P=+$('P').value,X=+$('X').value,Y=+$('Y').value;
+  const aw=arrow.img.naturalWidth||A;
+  const k=A/aw;
+  const hx=$('HX').value!==''?+$('HX').value:Math.round(arrow.hx*k);
+  const hy=$('HY').value!==''?+$('HY').value:Math.round(arrow.hy*k);
+  const c=document.createElement('canvas');c.width=c.height=S;
+  const g=c.getContext('2d',{willReadFrequently:true});
+  g.imageSmoothingQuality='high';
+  return {S,hx,hy,imgs:frames.map(fr=>{
+    g.clearRect(0,0,S,S);
+    const dSpin=()=>g.drawImage(fr,X,Y,P,P*(fr.naturalHeight/(fr.naturalWidth||1)));
+    const dArr=()=>g.drawImage(arrow.img,0,0,A,A*(arrow.img.naturalHeight/(arrow.img.naturalWidth||1)));
+    if($('ORD').value==='ani'){dArr();dSpin();}else{dSpin();dArr();}
+    return g.getImageData(0,0,S,S);
+  })};
+}
+
+function update(){
+  clearTimeout(timer);$('dl').disabled=true;
+  if(!ani||!arrow||!frames.length) return;
+  composed=compose();
+  const pv=$('pv');pv.width=pv.height=composed.S;
+  const g=pv.getContext('2d');
+  const order=ani.seq||frames.map((_,i)=>i);
+  let i=0;
+  (function tick(){
+    const fi=order[i%order.length];
+    g.clearRect(0,0,composed.S,composed.S);
+    g.putImageData(composed.imgs[fi]||composed.imgs[0],0,0);
+    const j=(ani.rate?ani.rate[i%ani.rate.length]:ani.anih.jif)||6;
+    i++;timer=setTimeout(tick,Math.max(30,j*1000/60));
+  })();
+  $('dl').disabled=false;
+}
+
+function curBytes(id,S,hx,hy){
+  const rowAnd=Math.ceil(S/32)*4, dib=40+S*S*4+rowAnd*S, total=22+dib;
+  const o=new Uint8Array(total), v=new DataView(o.buffer);
+  v.setUint16(2,2,true);v.setUint16(4,1,true);
+  o[6]=S>=256?0:S;o[7]=S>=256?0:S;
+  v.setUint16(10,hx,true);v.setUint16(12,hy,true);
+  v.setUint32(14,dib,true);v.setUint32(18,22,true);
+  let p=22;
+  v.setUint32(p,40,true);v.setInt32(p+4,S,true);v.setInt32(p+8,S*2,true);
+  v.setUint16(p+12,1,true);v.setUint16(p+14,32,true);v.setUint32(p+20,S*S*4+rowAnd*S,true);
+  p+=40;
+  for(let y=S-1;y>=0;y--)for(let x=0;x<S;x++){
+    const s=(y*S+x)*4;
+    o[p++]=id.data[s+2];o[p++]=id.data[s+1];o[p++]=id.data[s];o[p++]=id.data[s+3];
+  }
+  return o;
+}
+
+function buildAni(){
+  const {S,hx,hy,imgs}=composed;
+  const cur=imgs.map(im=>curBytes(im,S,hx,hy));
+  const chunks=[];
+  const u32=n=>{const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,true);return b};
+  const ch=(id,data)=>{const a=[new TextEncoder().encode(id),u32(data.length),data];if(data.length&1)a.push(new Uint8Array(1));return a};
+  const hasSeq=!!ani.seq, hasRate=!!ani.rate;
+  const nSteps=hasSeq?ani.seq.length:imgs.length;
+  const ah=new Uint8Array(36),av=new DataView(ah.buffer);
+  av.setUint32(0,36,true);av.setUint32(4,imgs.length,true);av.setUint32(8,nSteps,true);
+  av.setUint32(12,S,true);av.setUint32(16,S,true);av.setUint32(28,ani.anih.jif||6,true);
+  av.setUint32(32,1|(hasSeq?2:0),true);
+  chunks.push(...ch('anih',ah));
+  const arr=a=>{const b=new Uint8Array(a.length*4),v=new DataView(b.buffer);a.forEach((x,i)=>v.setUint32(i*4,x,true));return b};
+  if(hasRate) chunks.push(...ch('rate',arr(ani.rate)));
+  if(hasSeq) chunks.push(...ch('seq ',arr(ani.seq)));
+  const fr=[new TextEncoder().encode('fram')];
+  cur.forEach(c=>fr.push(...ch('icon',c)));
+  const frLen=fr.reduce((s,x)=>s+x.length,0);
+  chunks.push(new TextEncoder().encode('LIST'),u32(frLen),...fr);
+  const bodyLen=4+chunks.reduce((s,x)=>s+x.length,0);
+  return new Blob([new TextEncoder().encode('RIFF'),u32(bodyLen),new TextEncoder().encode('ACON'),...chunks],{type:'application/octet-stream'});
+}
+
+$('dl').onclick=()=>{
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(buildAni());a.download='background.ani';
+  document.body.appendChild(a);a.click();a.remove();
+};
+</script>
+</body>
+</html>
